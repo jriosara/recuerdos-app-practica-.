@@ -45,6 +45,24 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
+// Crear tabla automáticamente si no existe
+pool.query(`
+  CREATE TABLE IF NOT EXISTS recuerdos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    titulo VARCHAR(255) NOT NULL,
+    descripcion TEXT,
+    fecha DATE NOT NULL,
+    url_foto VARCHAR(500) NOT NULL,
+    public_id VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  )
+`).then(() => {
+  console.log('✅ Tabla recuerdos lista');
+}).catch(err => {
+  console.error('❌ Error:', err);
+});
+
 // RUTAS DE LA API
 
 // Obtener todos los recuerdos
