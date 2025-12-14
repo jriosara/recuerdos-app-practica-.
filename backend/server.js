@@ -25,6 +25,13 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+//Temporarl
+console.log('☁️ Cloudinary config:', {
+  cloud: process.env.CLOUDINARY_CLOUD_NAME,
+  key: process.env.CLOUDINARY_API_KEY ? 'OK' : 'MISSING',
+  secret: process.env.CLOUDINARY_API_SECRET ? 'OK' : 'MISSING'
+});
+
 // Configurar almacenamiento en Cloudinary
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
@@ -96,15 +103,25 @@ app.get('/api/recuerdos/:id', async (req, res) => {
 // Crear nuevo recuerdo
 app.post('/api/recuerdos', upload.single('foto'), async (req, res) => {
   try {
+    console.log('📩 BODY:', req.body);
+    console.log('📸 FILE:', req.file);
+
     const { titulo, descripcion, fecha } = req.body;
-    
+
     if (!req.file) {
+      console.error('❌ No llegó el archivo');
       return res.status(400).json({ error: 'La foto es obligatoria' });
     }
 
     const [result] = await pool.query(
       'INSERT INTO recuerdos (titulo, descripcion, fecha, url_foto, public_id) VALUES (?, ?, ?, ?, ?)',
-      [titulo, descripcion, fecha, req.file.path, req.file.filename]
+      [
+        titulo,
+        descripcion,
+        fecha,
+        req.file.path,
+        req.file.filename
+      ]
     );
 
     res.status(201).json({
@@ -115,11 +132,16 @@ app.post('/api/recuerdos', upload.single('foto'), async (req, res) => {
       url_foto: req.file.path,
       message: 'Recuerdo creado exitosamente'
     });
+
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error al crear recuerdo' });
+    console.error('🔥 ERROR REAL AL GUARDAR:', error);
+    res.status(500).json({
+      error: 'Error al crear recuerdo',
+      detalle: error.message
+    });
   }
 });
+
 
 // Actualizar recuerdo
 app.put('/api/recuerdos/:id', upload.single('foto'), async (req, res) => {
