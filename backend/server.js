@@ -11,14 +11,25 @@ const app = express();
 // AGREGAR ESTA LÍNEA:
 app.use(express.static('public'));
 
-// Middlewares
+/* Middlewares
 app.use(cors({
   origin: [
     'https://recuerdos-app-git-main-alexs-projects-4ce180e5.vercel.app',
     'http://localhost:3000'
   ],
   credentials: true
+}));*/
+
+//Probar
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://recuerdos-app.vercel.app'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
 
 // Configurar Cloudinary
 cloudinary.config({
