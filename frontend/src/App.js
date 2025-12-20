@@ -18,6 +18,12 @@ function App() {
   const [previewImagen, setPreviewImagen] = useState(null);
   const [temaOscuro, setTemaOscuro] = useState(false);
   const [mostrarFormulario, setMostrarFormulario] = useState(false);
+  const [filtros, setFiltros] = useState({
+    busqueda: '',
+    anio: '',
+    mes: '',
+    orden: 'reciente'
+  });
 
   useEffect(() => {
     cargarRecuerdos();
@@ -26,7 +32,7 @@ function App() {
     if (temaGuardado) {
       setTemaOscuro(JSON.parse(temaGuardado));
     }
-  }, []);
+  }, [filtros]); // Recargar cuando cambien los filtros
 
   useEffect(() => {
     localStorage.setItem('temaOscuro', JSON.stringify(temaOscuro));
@@ -35,7 +41,13 @@ function App() {
 
   const cargarRecuerdos = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/recuerdos`);
+      const params = new URLSearchParams();
+      if (filtros.busqueda) params.append('search', filtros.busqueda);
+      if (filtros.anio) params.append('year', filtros.anio);
+      if (filtros.mes) params.append('month', filtros.mes);
+      params.append('order', filtros.orden);
+
+      const response = await axios.get(`${API_URL}/api/recuerdos`, { params });
       setRecuerdos(response.data);
     } catch (error) {
       console.error('Error al cargar recuerdos:', error);
@@ -233,6 +245,47 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Filtros */}
+      <div className="filtros-container">
+        <input 
+          type="text" 
+          placeholder="🔍 Buscar por título..." 
+          value={filtros.busqueda}
+          onChange={(e) => setFiltros({...filtros, busqueda: e.target.value})}
+        />
+        
+        <select 
+          value={filtros.anio} 
+          onChange={(e) => setFiltros({...filtros, anio: e.target.value})}
+        >
+          <option value="">📅 Todos los años</option>
+          {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map(anio => (
+            <option key={anio} value={anio}>{anio}</option>
+          ))}
+        </select>
+
+        <select 
+          value={filtros.mes} 
+          onChange={(e) => setFiltros({...filtros, mes: e.target.value})}
+        >
+          <option value="">🗓️ Todos los meses</option>
+          {[
+            'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+            'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+          ].map((mes, i) => (
+            <option key={i} value={i + 1}>{mes}</option>
+          ))}
+        </select>
+
+        <select 
+          value={filtros.orden} 
+          onChange={(e) => setFiltros({...filtros, orden: e.target.value})}
+        >
+          <option value="reciente">⬇️ Más recientes</option>
+          <option value="antiguo">⬆️ Más antiguos</option>
+        </select>
+      </div>
 
       {/* Galería estilo Pinterest */}
       <main className="main-content">

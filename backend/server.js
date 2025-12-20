@@ -24,6 +24,7 @@ app.use(cors({
 app.use(cors({
   origin: [
     'http://localhost:3000',
+    'http://localhost:3001',
     'https://recuerdos-app.vercel.app'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -58,40 +59,93 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage: storage });
 
 // Conexión a MySQL
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT || 3306,  // ← AGREGAR ESTA LÍNEA
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10
-});
+let pool;
 
-// Crear tabla automáticamente si no existe
-pool.query(`
-  CREATE TABLE IF NOT EXISTS recuerdos (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    titulo VARCHAR(255) NOT NULL,
-    descripcion TEXT,
-    fecha DATE NOT NULL,
-    url_foto VARCHAR(500) NOT NULL,
-    public_id VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-  )
-`).then(() => {
-  console.log('✅ Tabla recuerdos lista');
-}).catch(err => {
-  console.error('❌ Error:', err);
-});
+const initDB = async () => {
+  try {
+    // 1. Intentar conectar para crear la BD si no existe
+    const connection = await mysql.createConnection({
+      host: process.env.DB_HOST === 'localhost' ? '127.0.0.1' : process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD
+    });
+    
+    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\``);
+    await connection.end();
+    console.log(`✅ Base de datos ${process.env.DB_NAME} verificada/creada`);
+
+    // 2. Crear pool con la BD seleccionada
+    pool = mysql.createPool({
+      host: process.env.DB_HOST === 'localhost' ? '127.0.0.1' : process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 10
+    });
+
+    // 3. Crear tabla
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS recuerdos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        titulo VARCHAR(255) NOT NULL,
+        descripcion TEXT,
+        fecha DATE NOT NULL,
+        url_foto VARCHAR(500) NOT NULL,
+        public_id VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Tabla recuerdos lista');
+
+  } catch (err) {
+    console.error('❌ Error al inicializar DB:', err);
+  }
+};
+
+initDB();
 
 // RUTAS DE LA API
 
-// Obtener todos los recuerdos
+// Obtener todos los recuerdos con filtros
 app.get('/api/recuerdos', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM recuerdos ORDER BY fecha DESC');
+    const { search, year, month, order } = req.query;
+    
+    let query = 'SELECT * FROM recuerdos';
+    const params = [];
+    const conditions = [];
+
+    if (search) {
+      conditions.push('titulo LIKE ?');
+      params.push(`%${search}%`);
+    }
+
+    if (year) {
+      conditions.push('YEAR(fecha) = ?');
+      params.push(year);
+    }
+
+    if (month) {
+      conditions.push('MONTH(fecha) = ?');
+      params.push(month);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    // Ordenamiento
+    if (order === 'antiguo') {
+      query += ' ORDER BY fecha ASC';
+    } else {
+      query += ' ORDER BY fecha DESC'; // Default: más reciente primero
+    }
+
+    const [rows] = await pool.query(query, params);
     res.json(rows);
   } catch (error) {
     console.error(error);
