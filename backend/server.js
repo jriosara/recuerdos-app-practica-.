@@ -1,26 +1,20 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
-
-// AGREGAR ESTA LÍNEA:
+app.use(express.json());
 app.use(express.static('public'));
 
-/* Middlewares
-app.use(cors({
-  origin: [
-    'https://recuerdos-app-git-main-alexs-projects-4ce180e5.vercel.app',
-    'http://localhost:3000'
-  ],
-  credentials: true
-}));*/
+// Clave secreta para JWT (debería estar en .env, pero usaremos un default para dev)
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_123';
 
-//Probar
+// Configuración de CORS
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -32,120 +26,152 @@ app.use(cors({
 }));
 
 
-// Configurar Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
 });
-
-//Temporarl
-console.log('☁️ Cloudinary config:', {
-  cloud: process.env.CLOUDINARY_CLOUD_NAME,
-  key: process.env.CLOUDINARY_API_KEY ? 'OK' : 'MISSING',
-  secret: process.env.CLOUDINARY_API_SECRET ? 'OK' : 'MISSING'
-});
-
-// Configurar almacenamiento en Cloudinary
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'recuerdos',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
-    transformation: [{ width: 1500, height: 1500, crop: 'limit' }]
-  }
-});
-
-const upload = multer({ storage: storage });
-
-// Conexión a MySQL
-let pool;
 
 const initDB = async () => {
   try {
-    // 1. Intentar conectar para crear la BD si no existe
-    const connection = await mysql.createConnection({
-      host: process.env.DB_HOST === 'localhost' ? '127.0.0.1' : process.env.DB_HOST,
-      port: process.env.DB_PORT || 3306,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD
-    });
-    
-    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME}\``);
-    await connection.end();
-    console.log(`✅ Base de datos ${process.env.DB_NAME} verificada/creada`);
-
-    // 2. Crear pool con la BD seleccionada
-    pool = mysql.createPool({
-      host: process.env.DB_HOST === 'localhost' ? '127.0.0.1' : process.env.DB_HOST,
-      port: process.env.DB_PORT || 3306,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 10
-    });
-
-    // 3. Crear tabla
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS recuerdos (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        titulo VARCHAR(255) NOT NULL,
-        descripcion TEXT,
-        fecha DATE NOT NULL,
-        url_foto VARCHAR(500) NOT NULL,
-        public_id VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      CREATE TABLE IF NOT EXISTS users (
+        id serial PRIMARY KEY,
+        username varchar(50) NOT NULL UNIQUE,
+        password varchar(255) NOT NULL,
+        created_at timestamptz DEFAULT now()
       )
     `);
-    console.log('✅ Tabla recuerdos lista');
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS recuerdos (
+        id serial PRIMARY KEY,
+        user_id integer REFERENCES users(id) ON DELETE CASCADE,
+        titulo varchar(255) NOT NULL,
+        descripcion text,
+        fecha date NOT NULL,
+        url_foto varchar(500) NOT NULL,
+        public_id varchar(255) NOT NULL,
+        created_at timestamptz DEFAULT now(),
+        updated_at timestamptz DEFAULT now()
+      )
+    `);
   } catch (err) {
-    console.error('❌ Error al inicializar DB:', err);
+    console.error('Error al inicializar DB:', err);
   }
 };
 
 initDB();
 
-// RUTAS DE LA API
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// Obtener todos los recuerdos con filtros
-app.get('/api/recuerdos', async (req, res) => {
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'recuerdos';
+
+const upload = multer({
+  storage: multer.memoryStorage()
+});
+
+// --- MIDDLEWARE DE AUTENTICACIÓN ---
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) return res.sendStatus(401); // No autorizado
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403); // Token inválido
+    req.user = user;
+    next();
+  });
+};
+
+
+// --- RUTAS DE AUTENTICACIÓN ---
+
+// Registro
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Faltan datos' });
+
+    // Hashear contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await pool.query(
+      'INSERT INTO users (username, password) VALUES ($1, $2)',
+      [username, hashedPassword]
+    );
+
+    res.status(201).json({ message: 'Usuario registrado exitosamente' });
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(400).json({ error: 'El usuario ya existe' });
+    }
+    res.status(500).json({ error: 'Error al registrar usuario' });
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const { rows: users } = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+
+    if (users.length === 0) return res.status(400).json({ error: 'Usuario no encontrado' });
+
+    const user = users[0];
+    const validPassword = await bcrypt.compare(password, user.password);
+
+    if (!validPassword) return res.status(400).json({ error: 'Contraseña incorrecta' });
+
+    // Crear token
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
+
+    res.json({ token, username: user.username });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al iniciar sesión' });
+  }
+});
+
+
+// --- RUTAS DE RECUERDOS (PROTEGIDAS) ---
+
+// Obtener todos los recuerdos DEL USUARIO
+app.get('/api/recuerdos', authenticateToken, async (req, res) => {
   try {
     const { search, year, month, order } = req.query;
+    const userId = req.user.id;
     
-    let query = 'SELECT * FROM recuerdos';
-    const params = [];
-    const conditions = [];
-
+    let query = 'SELECT * FROM recuerdos WHERE user_id = $1';
+    const params = [userId];
+    let index = 2;
+    
     if (search) {
-      conditions.push('titulo LIKE ?');
+      query += ` AND titulo ILIKE $${index}`;
       params.push(`%${search}%`);
+      index++;
     }
 
     if (year) {
-      conditions.push('YEAR(fecha) = ?');
+      query += ` AND EXTRACT(YEAR FROM fecha) = $${index}`;
       params.push(year);
+      index++;
     }
 
     if (month) {
-      conditions.push('MONTH(fecha) = ?');
+      query += ` AND EXTRACT(MONTH FROM fecha) = $${index}`;
       params.push(month);
+      index++;
     }
 
-    if (conditions.length > 0) {
-      query += ' WHERE ' + conditions.join(' AND ');
-    }
-
-    // Ordenamiento
     if (order === 'antiguo') {
       query += ' ORDER BY fecha ASC';
     } else {
-      query += ' ORDER BY fecha DESC'; // Default: más reciente primero
+      query += ' ORDER BY fecha DESC';
     }
 
-    const [rows] = await pool.query(query, params);
+    const { rows } = await pool.query(query, params);
     res.json(rows);
   } catch (error) {
     console.error(error);
@@ -153,10 +179,10 @@ app.get('/api/recuerdos', async (req, res) => {
   }
 });
 
-// Obtener un recuerdo por ID
-app.get('/api/recuerdos/:id', async (req, res) => {
+// Obtener un recuerdo por ID (Solo si es del usuario)
+app.get('/api/recuerdos/:id', authenticateToken, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM recuerdos WHERE id = ?', [req.params.id]);
+    const { rows } = await pool.query('SELECT * FROM recuerdos WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Recuerdo no encontrado' });
     }
@@ -168,70 +194,104 @@ app.get('/api/recuerdos/:id', async (req, res) => {
 });
 
 // Crear nuevo recuerdo
-app.post('/api/recuerdos', upload.single('foto'), async (req, res) => {
+app.post('/api/recuerdos', authenticateToken, upload.single('foto'), async (req, res) => {
   try {
-    console.log('📩 BODY:', req.body);
-    console.log('📸 FILE:', req.file);
-
     const { titulo, descripcion, fecha } = req.body;
+    const userId = req.user.id;
 
     if (!req.file) {
-      console.error('❌ No llegó el archivo');
       return res.status(400).json({ error: 'La foto es obligatoria' });
     }
 
-    const [result] = await pool.query(
-      'INSERT INTO recuerdos (titulo, descripcion, fecha, url_foto, public_id) VALUES (?, ?, ?, ?, ?)',
+    const file = req.file;
+    const filePath = `recuerdos/${Date.now()}-${file.originalname}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(SUPABASE_BUCKET)
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype
+      });
+
+    if (uploadError) {
+      return res.status(500).json({ error: 'Error al subir imagen' });
+    }
+
+    const { data: publicData } = supabase.storage
+      .from(SUPABASE_BUCKET)
+      .getPublicUrl(filePath);
+
+    const publicUrl = publicData.publicUrl;
+
+    const result = await pool.query(
+      'INSERT INTO recuerdos (titulo, descripcion, fecha, url_foto, public_id, user_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
       [
         titulo,
         descripcion,
         fecha,
-        req.file.path,
-        req.file.filename
+        publicUrl,
+        filePath,
+        userId
       ]
     );
 
     res.status(201).json({
-      id: result.insertId,
+      id: result.rows[0].id,
       titulo,
       descripcion,
       fecha,
-      url_foto: req.file.path,
+      url_foto: publicUrl,
       message: 'Recuerdo creado exitosamente'
     });
 
   } catch (error) {
-    console.error('🔥 ERROR REAL AL GUARDAR:', error);
-    res.status(500).json({
-      error: 'Error al crear recuerdo',
-      detalle: error.message
-    });
+    console.error('🔥 ERROR:', error);
+    res.status(500).json({ error: 'Error al crear recuerdo' });
   }
 });
 
 
 // Actualizar recuerdo
-app.put('/api/recuerdos/:id', upload.single('foto'), async (req, res) => {
+app.put('/api/recuerdos/:id', authenticateToken, upload.single('foto'), async (req, res) => {
   try {
     const { titulo, descripcion, fecha } = req.body;
     const { id } = req.params;
+    const userId = req.user.id;
 
-    // Verificar si existe
-    const [existing] = await pool.query('SELECT * FROM recuerdos WHERE id = ?', [id]);
+    const { rows: existing } = await pool.query('SELECT * FROM recuerdos WHERE id = $1 AND user_id = $2', [id, userId]);
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Recuerdo no encontrado' });
+      return res.status(404).json({ error: 'Recuerdo no encontrado o no autorizado' });
     }
 
     let updateQuery, params;
 
     if (req.file) {
-      // Si hay nueva foto, eliminar la anterior de Cloudinary
-      await cloudinary.uploader.destroy(existing[0].public_id);
-      
-      updateQuery = 'UPDATE recuerdos SET titulo = ?, descripcion = ?, fecha = ?, url_foto = ?, public_id = ? WHERE id = ?';
-      params = [titulo, descripcion, fecha, req.file.path, req.file.filename, id];
+      await supabase.storage
+        .from(SUPABASE_BUCKET)
+        .remove([existing[0].public_id]);
+
+      const file = req.file;
+      const filePath = `recuerdos/${Date.now()}-${file.originalname}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(SUPABASE_BUCKET)
+        .upload(filePath, file.buffer, {
+          contentType: file.mimetype
+        });
+
+      if (uploadError) {
+        return res.status(500).json({ error: 'Error al subir imagen' });
+      }
+
+      const { data: publicData } = supabase.storage
+        .from(SUPABASE_BUCKET)
+        .getPublicUrl(filePath);
+
+      const publicUrl = publicData.publicUrl;
+
+      updateQuery = 'UPDATE recuerdos SET titulo = $1, descripcion = $2, fecha = $3, url_foto = $4, public_id = $5 WHERE id = $6';
+      params = [titulo, descripcion, fecha, publicUrl, filePath, id];
     } else {
-      updateQuery = 'UPDATE recuerdos SET titulo = ?, descripcion = ?, fecha = ? WHERE id = ?';
+      updateQuery = 'UPDATE recuerdos SET titulo = $1, descripcion = $2, fecha = $3 WHERE id = $4';
       params = [titulo, descripcion, fecha, id];
     }
 
@@ -244,21 +304,21 @@ app.put('/api/recuerdos/:id', upload.single('foto'), async (req, res) => {
 });
 
 // Eliminar recuerdo
-app.delete('/api/recuerdos/:id', async (req, res) => {
+app.delete('/api/recuerdos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.user.id;
 
-    // Obtener el public_id para eliminar de Cloudinary
-    const [rows] = await pool.query('SELECT public_id FROM recuerdos WHERE id = ?', [id]);
+    const { rows } = await pool.query('SELECT public_id FROM recuerdos WHERE id = $1 AND user_id = $2', [id, userId]);
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Recuerdo no encontrado' });
+      return res.status(404).json({ error: 'Recuerdo no encontrado o no autorizado' });
     }
+    
+    await supabase.storage
+      .from(SUPABASE_BUCKET)
+      .remove([rows[0].public_id]);
 
-    // Eliminar de Cloudinary
-    await cloudinary.uploader.destroy(rows[0].public_id);
-
-    // Eliminar de la base de datos
-    await pool.query('DELETE FROM recuerdos WHERE id = ?', [id]);
+    await pool.query('DELETE FROM recuerdos WHERE id = $1', [id]);
     
     res.json({ message: 'Recuerdo eliminado exitosamente' });
   } catch (error) {

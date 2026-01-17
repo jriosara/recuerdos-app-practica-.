@@ -1,10 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
+import Login from './Login';
+import Register from './Register';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://recuerdos-app-production-0514.up.railway.app';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 function App() {
+  // Auth state
+  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [username, setUsername] = useState(localStorage.getItem('username'));
+  const [showRegister, setShowRegister] = useState(false);
+
+  // App state
   const [recuerdos, setRecuerdos] = useState([]);
   const [formulario, setFormulario] = useState({
     titulo: '',
@@ -26,18 +34,44 @@ function App() {
   });
 
   useEffect(() => {
-    cargarRecuerdos();
     // Cargar preferencia de tema
     const temaGuardado = localStorage.getItem('temaOscuro');
     if (temaGuardado) {
       setTemaOscuro(JSON.parse(temaGuardado));
     }
-  }, [filtros]); // Recargar cuando cambien los filtros
+  }, []);
+
+  useEffect(() => {
+    if (token) {
+      cargarRecuerdos();
+    }
+  }, [token, filtros]); 
 
   useEffect(() => {
     localStorage.setItem('temaOscuro', JSON.stringify(temaOscuro));
     document.body.className = temaOscuro ? 'tema-oscuro' : 'tema-claro';
   }, [temaOscuro]);
+
+  // Auth Handlers
+  const handleLogin = (newToken, newUsername) => {
+    setToken(newToken);
+    setUsername(newUsername);
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('username', newUsername);
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setUsername(null);
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    setRecuerdos([]);
+  };
+
+  // API Calls with Auth Header
+  const getAuthHeaders = () => ({
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
 
   const cargarRecuerdos = async () => {
     try {
@@ -47,10 +81,16 @@ function App() {
       if (filtros.mes) params.append('month', filtros.mes);
       params.append('order', filtros.orden);
 
-      const response = await axios.get(`${API_URL}/api/recuerdos`, { params });
+      const response = await axios.get(`${API_URL}/api/recuerdos`, { 
+        params,
+        ...getAuthHeaders()
+      });
       setRecuerdos(response.data);
     } catch (error) {
       console.error('Error al cargar recuerdos:', error);
+      if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+        handleLogout();
+      }
     }
   };
 
@@ -81,11 +121,17 @@ function App() {
     try {
       if (editando) {
         await axios.put(`${API_URL}/api/recuerdos/${editando}`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
+          headers: { 
+            'Content-Type': 'multipart/form-data',
+            'Authorization': `Bearer ${token}`
+          }
         });
       } else {
         await axios.post(`${API_URL}/api/recuerdos`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
+          headers: { 
+            'Content-Type': 'multipart/form-data',
+            'Authorization': `Bearer ${token}`
+          }
         });
       }
 
@@ -111,7 +157,7 @@ function App() {
     if (!window.confirm('¿Eliminar este recuerdo?')) return;
 
     try {
-      await axios.delete(`${API_URL}/api/recuerdos/${id}`);
+      await axios.delete(`${API_URL}/api/recuerdos/${id}`, getAuthHeaders());
       cargarRecuerdos();
     } catch (error) {
       alert('Error al eliminar recuerdo');
@@ -142,6 +188,28 @@ function App() {
     setMostrarFormulario(false);
   };
 
+  // Render Logic
+  if (!token) {
+    if (showRegister) {
+      return (
+        <div className={`app ${temaOscuro ? 'dark' : 'light'}`}>
+          <Register 
+            onRegister={() => setShowRegister(false)} 
+            onSwitchToLogin={() => setShowRegister(false)} 
+          />
+        </div>
+      );
+    }
+    return (
+      <div className={`app ${temaOscuro ? 'dark' : 'light'}`}>
+        <Login 
+          onLogin={handleLogin} 
+          onSwitchToRegister={() => setShowRegister(true)} 
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={`app ${temaOscuro ? 'dark' : 'light'}`}>
       {/* Header */}
@@ -153,11 +221,16 @@ function App() {
           </div>
           
           <div className="header-right">
+            <div className="user-menu">
+              <span className="user-name">Hola, {username}</span>
+              <button className="btn-logout" onClick={handleLogout}>Salir</button>
+            </div>
+            
             <button 
               className="btn-nuevo"
               onClick={() => setMostrarFormulario(!mostrarFormulario)}
             >
-              {mostrarFormulario ? '✕ Cerrar' : '+ Nuevo Recuerdo'}
+              {mostrarFormulario ? '✕ Cerrar' : '+ Nuevo'}
             </button>
             
             <button 
